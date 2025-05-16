@@ -1,0 +1,1 @@
+# netcore-mysql-query-builder
