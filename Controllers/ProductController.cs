@@ -24,16 +24,15 @@ public class ProductController : ControllerBase
         try
         {
 
-            var builder = new QueryBuilder<Product>(_koneksi, "p");
+        var builder = new QueryBuilder()
+            .Table("Products p")
+            .Limit(10)
+            .Offset(0);
 
-            var result = await builder
-                .Select(p => new { p.Id, p.Name, p.Price, p.Stock })
-                .OrderBy("Name", descending: true)
-                .Limit(10)
-                .Offset(0)
-                .BuildSelect();
+            var (sql, param) = builder.BuildSelect();
+            var products = await _koneksi.SqlDynamicQuery<Product>(sql, param);
 
-            return Ok(result);
+            return Ok(products);
         }
         catch (Exception ex)
         {

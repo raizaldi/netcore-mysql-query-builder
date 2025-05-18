@@ -1,177 +1,202 @@
-
+using Dapper;
 
 namespace Latihan_dotnet.Data;
 
-using Dapper;
-using System.Linq.Expressions;
-using System.Reflection;
-
-public class QueryBuilder<T>
+public class QueryBuilder
 {
-
-    private readonly Koneksi _koneksi;
-
-    private readonly string? _tableName;
-    private readonly string? _alias;
+    private string? _table;
     private List<string> _selects = new();
-    private List<string> _whereClauses = new();
     private Dictionary<string, object> _insertValues = new();
     private Dictionary<string, object> _updateValues = new();
+    private List<string> _whereClauses = new();
     private List<string> _joins = new();
     private List<string> _groupBys = new();
     private List<string> _orderBys = new();
     private int? _limit = null;
     private int? _offset = null;
+
     private DynamicParameters _parameters = new();
     private int _paramCounter = 0;
 
-    public QueryBuilder(Koneksi koneksi, string alias = null)
+    public QueryBuilder Table(string table)
     {
-        _koneksi = koneksi;
-        _tableName = typeof(T).Name;
-        _alias = alias;
+        _table = table;
+        Reset();
+        return this;
     }
 
-    private string GenerateParam(string name) => $"{name}_{_paramCounter++}";
-
-    public QueryBuilder<T> Select<TSelect>(Expression<Func<T, TSelect>> selector)
+    private void Reset()
     {
-        if (selector.Body is NewExpression newExpr)
+        _selects.Clear();
+        _insertValues.Clear();
+        _updateValues.Clear();
+        _whereClauses.Clear();
+        _joins.Clear();
+        _groupBys.Clear();
+        _orderBys.Clear();
+        _limit = null;
+        _offset = null;
+        _parameters = new();
+        _paramCounter = 0;
+    }
+
+    public QueryBuilder Select(params string[] columns)
+    {
+        _selects.AddRange(columns);
+        return this;
+    }
+
+    public QueryBuilder Where(string column, string op, object value)
+    {
+        var paramName = GenerateParamName(column);
+        _whereClauses.Add($"{column} {op} @{paramName}");
+        _parameters.Add(paramName, value);
+        return this;
+    }
+
+    public QueryBuilder And(string column, string op, object value)
+    {
+        var paramName = GenerateParamName(column);
+        _whereClauses.Add($"AND {column} {op} @{paramName}");
+        _parameters.Add(paramName, value);
+        return this;
+    }
+
+    public QueryBuilder Or(string column, string op, object value)
+    {
+        var paramName = GenerateParamName(column);
+        _whereClauses.Add($"OR {column} {op} @{paramName}");
+        _parameters.Add(paramName, value);
+        return this;
+    }
+
+    public QueryBuilder WhereIn(string column, IEnumerable<object> values)
+    {
+        var paramNames = new List<string>();
+        foreach (var value in values)
         {
-            foreach (var arg in newExpr.Members)
-            {
-                _selects.Add($"{_alias}.{arg.Name}");
-            }
+            var paramName = GenerateParamName(column);
+            paramNames.Add("@" + paramName);
+            _parameters.Add(paramName, value);
         }
+        var inClause = $"{column} IN ({string.Join(", ", paramNames)})";
+        _whereClauses.Add(inClause);
         return this;
     }
 
-    public QueryBuilder<T> InnerJoin<TJoin>(string alias, string onClause)
+    public QueryBuilder Like(string column, string pattern)
     {
-        var joinTable = typeof(TJoin).Name;
-        _joins.Add($"INNER JOIN {joinTable} {alias} ON {onClause}");
+        var paramName = GenerateParamName(column);
+        _whereClauses.Add($"{column} LIKE @{paramName}");
+        _parameters.Add(paramName, pattern);
         return this;
     }
 
-    public QueryBuilder<T> LeftJoin<TJoin>(string alias, string onClause)
+    public QueryBuilder InnerJoin(string table, string alias, string onClause)
     {
-        var joinTable = typeof(TJoin).Name;
-        _joins.Add($"LEFT JOIN {joinTable} {alias} ON {onClause}");
+        _joins.Add($"INNER JOIN {table} {alias} ON {onClause}");
         return this;
     }
 
-    public QueryBuilder<T> GroupBy(params string[] columns)
+    public QueryBuilder LeftJoin(string table, string alias, string onClause)
     {
-        _groupBys.AddRange(columns.Select(c => $"{_alias}.{c}"));
+        _joins.Add($"LEFT JOIN {table} {alias} ON {onClause}");
         return this;
     }
 
-    public QueryBuilder<T> OrderBy(string column, bool descending = false)
+    public QueryBuilder GroupBy(params string[] columns)
     {
-        _orderBys.Add($"{_alias}.{column} {(descending ? "DESC" : "ASC")}");
+        _groupBys.AddRange(columns);
         return this;
     }
 
+    public QueryBuilder OrderBy(string column, bool descending = false)
+    {
+        _orderBys.Add($"{column} {(descending ? "DESC" : "ASC")}");
+        return this;
+    }
 
-    public QueryBuilder<T> Limit(int limit)
+    public QueryBuilder Limit(int limit)
     {
         _limit = limit;
         return this;
     }
 
-    public QueryBuilder<T> Offset(int offset)
+    public QueryBuilder Offset(int offset)
     {
         _offset = offset;
         return this;
     }
 
-
-    public QueryBuilder<T> Insert(T obj)
+    public QueryBuilder Insert(Dictionary<string, object> values)
     {
-        foreach (var prop in typeof(T).GetProperties())
-        {
-            var val = prop.GetValue(obj);
-            if (val != null && !IsKey(prop))
-            {
-                _insertValues[prop.Name] = val;
-                _parameters.Add(prop.Name, val);
-            }
-        }
+        _insertValues = values;
+        foreach (var kv in values)
+            _parameters.Add(kv.Key, kv.Value);
         return this;
     }
 
-    public QueryBuilder<T> Update(T obj)
+    public QueryBuilder Update(Dictionary<string, object> values)
     {
-        foreach (var prop in typeof(T).GetProperties())
-        {
-            var val = prop.GetValue(obj);
-            if (val != null && !IsKey(prop))
-            {
-                _updateValues[prop.Name] = val;
-                _parameters.Add(prop.Name, val);
-            }
-        }
+        _updateValues = values;
+        foreach (var kv in values)
+            _parameters.Add(kv.Key, kv.Value);
         return this;
     }
 
-    public QueryBuilder<T> Where(string column, string op, object value)
+    public (string query, DynamicParameters parameters) BuildSelect()
     {
-        var paramName = GenerateParam(column);
-        _whereClauses.Add($"{_alias}.{column} {op} @{paramName}");
-        _parameters.Add(paramName, value);
-        return this;
-    }
+        var columns = _selects.Count > 0 ? string.Join(", ", _selects) : "*";
+        var query = $"SELECT {columns} FROM {_table}";
 
-    public async Task<IEnumerable<T>> BuildSelect()
-    {
-        var cols = _selects.Count > 0 ? string.Join(", ", _selects) : $"{_alias}.*";
-        var sql = $"SELECT {cols} FROM {_tableName} {_alias}";
+        if (_joins.Count > 0)
+            query += " " + string.Join(" ", _joins);
+
         if (_whereClauses.Count > 0)
-            sql += " WHERE " + string.Join(" AND ", _whereClauses);
+            query += " WHERE " + string.Join(" ", _whereClauses);
 
         if (_groupBys.Count > 0)
-            sql += " GROUP BY " + string.Join(", ", _groupBys);
+            query += " GROUP BY " + string.Join(", ", _groupBys);
 
         if (_orderBys.Count > 0)
-            sql += " ORDER BY " + string.Join(", ", _orderBys);
+            query += " ORDER BY " + string.Join(", ", _orderBys);
 
         if (_limit.HasValue)
-            sql += $" LIMIT {_limit.Value}";
+            query += $" LIMIT {_limit.Value}";
 
         if (_offset.HasValue)
-            sql += $" OFFSET {_offset.Value}";
+            query += $" OFFSET {_offset.Value}";
 
-        var result = await _koneksi.SqlDynamicQuery<T>(sql, _parameters);
-        return result;
+        return (query, _parameters);
     }
 
     public (string query, DynamicParameters parameters) BuildInsert()
     {
         var columns = string.Join(", ", _insertValues.Keys);
         var values = string.Join(", ", _insertValues.Keys.Select(k => "@" + k));
-        var sql = $"INSERT INTO {_tableName} ({columns}) VALUES ({values})";
-        return (sql, _parameters);
+        var query = $"INSERT INTO {_table} ({columns}) VALUES ({values})";
+        return (query, _parameters);
     }
 
     public (string query, DynamicParameters parameters) BuildUpdate()
     {
         var setClause = string.Join(", ", _updateValues.Keys.Select(k => $"{k} = @{k}"));
-        var sql = $"UPDATE {_tableName} SET {setClause}";
+        var query = $"UPDATE {_table} SET {setClause}";
         if (_whereClauses.Count > 0)
-            sql += " WHERE " + string.Join(" AND ", _whereClauses);
-        return (sql, _parameters);
+            query += " WHERE " + string.Join(" ", _whereClauses);
+        return (query, _parameters);
     }
 
     public (string query, DynamicParameters parameters) BuildDelete()
     {
-        var sql = $"DELETE FROM {_tableName}";
+        var query = $"DELETE FROM {_table}";
         if (_whereClauses.Count > 0)
-            sql += " WHERE " + string.Join(" AND ", _whereClauses);
-        return (sql, _parameters);
+            query += " WHERE " + string.Join(" ", _whereClauses);
+        return (query, _parameters);
     }
 
-    private bool IsKey(PropertyInfo prop)
+    private string GenerateParamName(string baseName)
     {
-        return prop.Name.Equals("Id", StringComparison.OrdinalIgnoreCase);
+        return $"{baseName}_{_paramCounter++}";
     }
 }
